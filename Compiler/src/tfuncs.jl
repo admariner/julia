@@ -1073,17 +1073,15 @@ end
 end
 
 @nospecs function getfield_tfunc(𝕃::AbstractLattice, s00, name, boundscheck_or_order)
-    t = isvarargtype(boundscheck_or_order) ? unwrapva(boundscheck_or_order) :
-        widenconst(boundscheck_or_order)
-    hasintersect(t, Symbol) || hasintersect(t, Bool) || return Bottom
+    if !isvarargtype(boundscheck_or_order)
+        t = widenconst(boundscheck_or_order)
+        hasintersect(t, Symbol) || hasintersect(t, Bool) || return Bottom
+    end
     return getfield_tfunc(𝕃, s00, name)
 end
 @nospecs function getfield_tfunc(𝕃::AbstractLattice, s00, name, order, boundscheck)
     hasintersect(widenconst(order), Symbol) || return Bottom
-    if isvarargtype(boundscheck)
-        t = unwrapva(boundscheck)
-        hasintersect(t, Symbol) || hasintersect(t, Bool) || return Bottom
-    else
+    if !isvarargtype(boundscheck)
         hasintersect(widenconst(boundscheck), Bool) || return Bottom
     end
     return getfield_tfunc(𝕃, s00, name)
@@ -1109,7 +1107,7 @@ function _getfield_tfunc_const(@nospecialize(sv), name::Const)
     if isa(sv, DataType) && nv == DATATYPE_TYPES_FIELDINDEX && isdefined(sv, nv)
         return Const(getfield(sv, nv))
     end
-    if isconst(typeof(sv), nv)
+    if !isa(sv, Module) && isconst(typeof(sv), nv)
         if isdefined(sv, nv)
             return Const(getfield(sv, nv))
         end
@@ -2454,6 +2452,9 @@ const _SPECIAL_BUILTINS = Any[
     Core._apply_iterate,
 ]
 
+# Types compatible with fpext/fptrunc
+const CORE_FLOAT_TYPES = Union{Core.BFloat16, Float16, Float32, Float64}
+
 function isdefined_effects(𝕃::AbstractLattice, argtypes::Vector{Any})
     # consistent if the first arg is immutable
     na = length(argtypes)
@@ -2867,6 +2868,17 @@ function intrinsic_exct(𝕃::AbstractLattice, f::IntrinsicFunction, argtypes::V
         if !(isprimitivetype(ty) && isprimitivetype(xty))
             return ErrorException
         end
+
+        # fpext and fptrunc have further restrictions on the allowed types.
+        if f === Intrinsics.fpext &&
+            !(ty <: CORE_FLOAT_TYPES && xty <: CORE_FLOAT_TYPES && Core.sizeof(ty) > Core.sizeof(xty))
+            return ErrorException
+        end
+        if f === Intrinsics.fptrunc &&
+            !(ty <: CORE_FLOAT_TYPES && xty <: CORE_FLOAT_TYPES && Core.sizeof(ty) < Core.sizeof(xty))
+            return ErrorException
+        end
+
         return Union{}
     end
 
@@ -3016,24 +3028,28 @@ function abstract_applicable(interp::AbstractInterpreter, argtypes::Vector{Any},
     isvarargtype(argtypes[2]) && return Future(CallMeta(Bool, ArgumentError, EFFECTS_THROWS, NoCallInfo()))
     argtypes = argtypes[2:end]
     atype = argtypes_to_type(argtypes)
-    matches = find_method_matches(interp, argtypes, atype; max_methods)
-    info = NoCallInfo()
-    if isa(matches, FailedMethodMatch)
-        rt = Bool # too many matches to analyze
+    if atype === Union{}
+        rt = Union{} # accidentally unreachable code
     else
-        (; valid_worlds, applicable) = matches
-        update_valid_age!(sv, valid_worlds)
-        napplicable = length(applicable)
-        if napplicable == 0
-            rt = Const(false) # never any matches
-        elseif !fully_covering(matches) || any_ambig(matches)
-            # Account for the fact that we may encounter a MethodError with a non-covered or ambiguous signature.
-            rt = Bool
+        matches = find_method_matches(interp, argtypes, atype; max_methods)
+        info = NoCallInfo()
+        if isa(matches, FailedMethodMatch)
+            rt = Bool # too many matches to analyze
         else
-            rt = Const(true) # has applicable matches
-        end
-        if rt !== Bool
-            info = VirtualMethodMatchInfo(matches.info)
+            (; valid_worlds, applicable) = matches
+            update_valid_age!(sv, valid_worlds)
+            napplicable = length(applicable)
+            if napplicable == 0
+                rt = Const(false) # never any matches
+            elseif !fully_covering(matches) || any_ambig(matches)
+                # Account for the fact that we may encounter a MethodError with a non-covered or ambiguous signature.
+                rt = Bool
+            else
+                rt = Const(true) # has applicable matches
+            end
+            if rt !== Bool
+                info = VirtualMethodMatchInfo(matches.info)
+            end
         end
     end
     return Future(CallMeta(rt, Union{}, EFFECTS_TOTAL, info))

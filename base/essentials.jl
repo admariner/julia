@@ -93,7 +93,7 @@ f(y) = [x for x in y]
 
 # Examples
 
-```julia-repl
+```jldoctest; setup = :(using InteractiveUtils)
 julia> f(A::AbstractArray) = g(A)
 f (generic function with 1 method)
 
@@ -102,7 +102,7 @@ g (generic function with 1 method)
 
 julia> @code_typed f([1.0])
 CodeInfo(
-1 ─ %1 = invoke Main.g(_2::AbstractArray)::Float64
+1 ─ %1 =    invoke g(A::AbstractArray)::Float64
 └──      return %1
 ) => Float64
 ```
@@ -726,6 +726,7 @@ julia> reinterpret(Tuple{UInt16, UInt8}, (0x01, 0x0203))
 
 """
 function reinterpret(::Type{Out}, x) where {Out}
+    @inline
     if isprimitivetype(Out) && isprimitivetype(typeof(x))
         return bitcast(Out, x)
     end
@@ -1266,6 +1267,9 @@ arbitrary code in fixed worlds. `world` may be `UnitRange`, in which case the ma
 will error unless the binding is valid and has the same value across the entire world
 range.
 
+As a special case, the world `∞` always refers to the latest world, even if that world
+is newer than the world currently running.
+
 The `@world` macro is primarily used in the printing of bindings that are no longer
 available in the current world.
 
@@ -1290,6 +1294,9 @@ julia> fold
     This functionality requires at least Julia 1.12.
 """
 macro world(sym, world)
+    if world == :∞
+        world = Expr(:call, get_world_counter)
+    end
     if isa(sym, Symbol)
         return :($(_resolve_in_world)($(esc(world)), $(QuoteNode(GlobalRef(__module__, sym)))))
     elseif isa(sym, GlobalRef)
