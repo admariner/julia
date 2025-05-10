@@ -1286,8 +1286,9 @@ function _include_from_serialized(pkg::PkgId, path::String, ocachepath::Union{No
         ext_edges = sv[4]::Union{Nothing,Vector{Any}}
         extext_methods = sv[5]::Vector{Any}
         internal_methods = sv[6]::Vector{Any}
-        StaticData.insert_backedges(edges, ext_edges, extext_methods, internal_methods)
-
+        Compiler.@zone "CC: INSERT_BACKEDGES" begin
+            StaticData.insert_backedges(edges, ext_edges, extext_methods, internal_methods)
+        end
         restored = register_restored_modules(sv, pkg, path)
 
         for M in restored
@@ -2331,7 +2332,7 @@ function require(into::Module, mod::Symbol)
     if world == typemax(UInt)
         world = get_world_counter()
     end
-    return invoke_in_world(world, __require, into, mod)
+    return Compiler.@zone "LOAD_Require" invoke_in_world(world, __require, into, mod)
 end
 
 function check_for_hint(into, mod)
@@ -2808,7 +2809,11 @@ function include_string(mapexpr::Function, mod::Module, code::AbstractString,
     loc = LineNumberNode(1, Symbol(filename))
     try
         ast = Meta.parseall(code, filename=filename)
-        @assert Meta.isexpr(ast, :toplevel)
+        if !Meta.isexpr(ast, :toplevel)
+            @assert Core._lower != fl_lower
+            # Only reached when JuliaLowering and alternate parse functions are activated
+            return Core.eval(mod, ast)
+        end
         result = nothing
         line_and_ex = Expr(:toplevel, loc, nothing)
         for ex in ast.args
