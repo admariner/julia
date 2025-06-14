@@ -1726,6 +1726,10 @@ end
 trigger_test_failure_break(@nospecialize(err)) =
     ccall(:jl_test_failure_breakpoint, Cvoid, (Any,), err)
 
+is_failfast_error(err::FailFastError) = true
+is_failfast_error(err::LoadError) = is_failfast_error(err.error) # handle `include` barrier
+is_failfast_error(err) = false
+
 """
 Generate the code for an `@testset` with a `let` argument.
 """
@@ -1837,7 +1841,7 @@ function testset_beginend_call(args, tests, source)
             # something in the test block threw an error. Count that as an
             # error in this test set
             trigger_test_failure_break(err)
-            if err isa FailFastError
+            if is_failfast_error(err)
                 get_testset_depth() > 1 ? rethrow() : failfast_print()
             else
                 record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
@@ -1925,7 +1929,9 @@ function testset_forloop(args, testloop, source)
             # Something in the test block threw an error. Count that as an
             # error in this test set
             trigger_test_failure_break(err)
-            if !isa(err, FailFastError)
+            if is_failfast_error(err)
+                get_testset_depth() > 1 ? rethrow() : failfast_print()
+            else
                 record(ts, Error(:nontest_error, Expr(:tuple), err, Base.current_exceptions(), $(QuoteNode(source))))
             end
         end
@@ -2134,7 +2140,7 @@ function _inferred(ex, mod, allow = :(Union{}))
                     kwargs = gensym()
                     quote
                         $(esc(args)), $(esc(kwargs)), result = $(esc(Expr(:call, _args_and_call, ex.args[2:end]..., ex.args[1])))
-                        inftype = $(gen_call_with_extracted_types(mod, Base.infer_return_type, :($(ex.args[1])($(args)...; $(kwargs)...))))
+                        inftype = $(gen_call_with_extracted_types(mod, Base.infer_return_type, :($(ex.args[1])($(args)...; $(kwargs)...)); is_source_reflection = false))
                     end
                 else
                     # No keywords
